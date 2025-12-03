@@ -1,13 +1,7 @@
-use std::{fmt, iter::Cycle};
+use core::panic;
+use std::{fmt};
 
 use crate::{pointer::Pointer, register::Register};
-
-pub enum FromAddr {
-    None,
-    B,
-    D,
-    H,
-}
 
 pub struct I8080 {
     pub a: Register,
@@ -75,27 +69,11 @@ impl I8080 {
         );
     }
 
-    fn read_byte_from_memory(&mut self, origin : FromAddr) -> u8 {
-        // for now i'll say that every read from memory does 2 cycles, since
-        // i've only implemented mov at it seems to be the case might be forced to find a better
-        // approach later
-        self.cycles += 2;
-        
-        let addr : u16 = match origin {
-            FromAddr::B => (self.b.0 as u16) << 8 | (self.c.0 as u16),
-            FromAddr::D => (self.d.0 as u16) << 8 | (self.e.0 as u16),
-            FromAddr::H => (self.h.0 as u16) << 8 | (self.l.0 as u16),
-            FromAddr::None => self.pc.0,
-        };
-
-        self.mem[addr as usize]
-    }
-
     pub fn mov(&mut self, opcode: u8) {
         // stole this beautiful macro from XAMPPRocky's similar project
         // still learning macros so please dont blame me
         macro_rules! mov {
-            ($x: ident, $b: expr, $c: expr, $d: expr, $e: expr, $h: expr, $l: expr, $hl: expr, $a: expr) => {
+            ($x: ident, $b: expr, $c: expr, $d: expr, $e: expr, $h: expr, $l: expr, $hl: expr, $a: expr) => {{
                 self.$x.0 = match opcode {
                     $b => self.b.0,
                     $c => self.c.0,
@@ -103,29 +81,76 @@ impl I8080 {
                     $e => self.e.0,
                     $h => self.h.0,
                     $l => self.l.0,
-                    $hl => self.read_byte_from_memory(FromAddr::H),
+                    $hl => self.h.register_pair(&self.l).load(&self.mem),
                     $a => self.a.0,
                     _ => panic!("Eroare!"),
+                };
+                // normal MOV operations take 5 cycles
+                self.cycles += 5;
+                
+                // for moves involving M
+                if opcode == $hl {
+                    self.cycles +=2;
+                }
+            }};
+        }
+
+        macro_rules! movm {
+            ($b: expr, $c: expr, $d: expr, $e: expr, $h: expr, $l: expr, $a: expr) => {{
+                match opcode {
+                    $b => self.pc.store(&mut self.mem, self.b.0),
+                    $c => self.pc.store(&mut self.mem, self.c.0),
+                    $d => self.pc.store(&mut self.mem, self.d.0),
+                    $e => self.pc.store(&mut self.mem, self.e.0),
+                    $h => self.pc.store(&mut self.mem, self.h.0),
+                    $l => self.pc.store(&mut self.mem, self.l.0),
+                    $a => self.pc.store(&mut self.mem, self.a.0),
+                    _ => panic!("Eroare"),
+                }
+                // for moves involving M
+                self.cycles += 7;
+            }};
+        }
+
+        match opcode {
+            0x78..=0x7f => mov!(a, 0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e, 0x7f),
+            0x40..=0x47 => mov!(b, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47),
+            0x48..=0x4f => mov!(c, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f),
+            0x50..=0x57 => mov!(d, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57),
+            0x58..=0x5f => mov!(e, 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f),
+            0x60..=0x67 => mov!(h, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67),
+            0x68..=0x6f => mov!(l, 0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f),
+            0x70..=0x75 | 0x77 => movm!(0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x77),
+            _ => panic!("Eroare!"),
+        }
+    }
+
+    pub fn lxi(&mut self, opcode: u8) {
+        self.cycles += 10;
+
+        macro_rules! lxi {
+            ($h: ident, $l: ident) => {
+                {
+                    self.$l.0 = self.pc.load(&self.mem);
+                    self.pc.inc();
+                    self.$h.0 = self.pc.load(&self.mem);
+                    self.pc.inc();
                 }
             };
         }
 
-        // every mov does adds at least 5 cycles, those involving memory add 7
-        self.cycles += 5;
-
         match opcode {
-            0x78..0x7f => mov!(a, 0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e, 0x7f),
-            0x40..0x47 => mov!(b, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47),
-            0x48..0x4f => mov!(c, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f),
-            0x50..0x57 => mov!(d, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57),
-            0x58..0x5f => mov!(e, 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f),
-            0x60..0x67 => mov!(h, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67),
-            0x68..0x6f => mov!(l, 0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f),
-            // TREAT MOV(M, REG) 0x70..0x75 | 0x77 => ...
-
-
-
-            _ => panic!("Not yet implemented"),
+            0x01 => lxi!(b, c),
+            0x11 => lxi!(d, e),
+            0x21 => lxi!(h, l),
+            0x31 => {
+                let l = self.pc.load(&self.mem);
+                self.pc.inc();
+                let h = self.pc.load(&self.mem);
+                self.pc.inc();
+                self.sp.0 = (h as u16) << 8 | (l as u16);
+            }
+            _ => panic!("Eroare!")
         }
     }
 }
